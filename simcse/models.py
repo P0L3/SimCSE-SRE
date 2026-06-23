@@ -54,19 +54,38 @@ class Pooler(nn.Module):
     'avg': average of the last layers' hidden states at each token.
     'avg_top2': average of the last two layers.
     'avg_first_last': average of the first and the last layers.
+    'mask': [MASK] token representation (SRE addition)
     """
     def __init__(self, pooler_type):
         super().__init__()
         self.pooler_type = pooler_type
-        assert self.pooler_type in ["cls", "cls_before_pooler", "avg", "avg_top2", "avg_first_last"], "unrecognized pooling type %s" % self.pooler_type
+        # --- SRE ADJUSTMENT: Added 'mask' to allowed pooler types ---
+        assert self.pooler_type in ["cls", "cls_before_pooler", "avg", "avg_top2", "avg_first_last", "mask"], "unrecognized pooling type %s" % self.pooler_type
 
-    def forward(self, attention_mask, outputs):
+    # --- SRE ADJUSTMENT: Added input_ids and mask_token_id parameters ---
+    def forward(self, attention_mask, outputs, input_ids=None, mask_token_id=None):
         last_hidden = outputs.last_hidden_state
         pooler_output = outputs.pooler_output
         hidden_states = outputs.hidden_states
 
         if self.pooler_type in ['cls_before_pooler', 'cls']:
             return last_hidden[:, 0]
+        # --- SRE ADJUSTMENT: Logic to extract the MASK token ---
+        elif self.pooler_type == "mask":
+            assert input_ids is not None, "input_ids must be provided for 'mask' pooling."
+            assert mask_token_id is not None, "mask_token_id must be provided in model_args for 'mask' pooling."
+            
+            mask_indices = (input_ids == mask_token_id).nonzero(as_tuple=True)
+            batch_size = input_ids.size(0)
+            hidden_size = last_hidden.size(-1)
+            
+            # Placeholder for embeddings
+            pooled_result = torch.zeros(batch_size, hidden_size, device=last_hidden.device)
+            if mask_indices[0].size(0) > 0:
+                pooled_result[mask_indices[0]] = last_hidden[mask_indices[0], mask_indices[1]]
+                
+            return pooled_result
+        # --------------------------------------------------------
         elif self.pooler_type == "avg":
             return ((last_hidden * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1))
         elif self.pooler_type == "avg_first_last":
@@ -89,7 +108,8 @@ def cl_init(cls, config):
     """
     cls.pooler_type = cls.model_args.pooler_type
     cls.pooler = Pooler(cls.model_args.pooler_type)
-    if cls.model_args.pooler_type == "cls":
+    # --- SRE ADJUSTMENT: Apply MLP on top of MASK as well ---
+    if cls.model_args.pooler_type in ["cls", "mask"]:
         cls.mlp = MLPLayer(config)
     cls.sim = Similarity(temp=cls.model_args.temp)
     cls.init_weights()
@@ -151,13 +171,15 @@ def cl_forward(cls,
             return_dict=True,
         )
 
-    # Pooling
-    pooler_output = cls.pooler(attention_mask, outputs)
+    # --- SRE ADJUSTMENT: Pass input_ids and mask_token_id to pooler ---
+    mask_token_id = getattr(cls.model_args, "mask_token_id", None)
+    pooler_output = cls.pooler(attention_mask, outputs, input_ids=input_ids, mask_token_id=mask_token_id)
+    # ------------------------------------------------------------------
+    
     pooler_output = pooler_output.view((batch_size, num_sent, pooler_output.size(-1))) # (bs, num_sent, hidden)
 
-    # If using "cls", we add an extra MLP layer
-    # (same as BERT's original implementation) over the representation.
-    if cls.pooler_type == "cls":
+    # --- SRE ADJUSTMENT: Add 'mask' support to MLP application ---
+    if cls.pooler_type in ["cls", "mask"]:
         pooler_output = cls.mlp(pooler_output)
 
     # Separate representation
@@ -258,8 +280,12 @@ def sentemb_forward(
         return_dict=True,
     )
 
-    pooler_output = cls.pooler(attention_mask, outputs)
-    if cls.pooler_type == "cls" and not cls.model_args.mlp_only_train:
+    # --- SRE ADJUSTMENT: Pass input_ids and mask_token_id to pooler ---
+    mask_token_id = getattr(cls.model_args, "mask_token_id", None)
+    pooler_output = cls.pooler(attention_mask, outputs, input_ids=input_ids, mask_token_id=mask_token_id)
+    
+    # --- SRE ADJUSTMENT: Add 'mask' support to MLP application ---
+    if cls.pooler_type in ["cls", "mask"] and not cls.model_args.mlp_only_train:
         pooler_output = cls.mlp(pooler_output)
 
     if not return_dict:
