@@ -23,7 +23,7 @@ from transformers.trainer_utils import (
     PredictionOutput,
     TrainOutput,
     default_compute_objective,
-    default_hp_space,
+    # default_hp_space,
     set_seed,
     speed_metrics,
 )
@@ -32,7 +32,7 @@ from transformers.file_utils import (
     is_apex_available,
     is_datasets_available,
     is_in_notebook,
-    is_torch_tpu_available,
+    # is_torch_tpu_available,
 )
 from transformers.trainer_callback import (
     CallbackHandler,
@@ -57,6 +57,9 @@ from torch.utils.data.dataset import Dataset
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import RandomSampler, SequentialSampler
 
+def is_torch_tpu_available():
+    return False
+
 if is_torch_tpu_available():
     import torch_xla.core.xla_model as xm
     import torch_xla.debug.metrics as met
@@ -72,8 +75,11 @@ if version.parse(torch.__version__) >= version.parse("1.6"):
 if is_datasets_available():
     import datasets
 
-from transformers.trainer import _model_unwrap
-from transformers.optimization import Adafactor, AdamW, get_scheduler
+# from transformers.trainer import _model_unwrap
+from transformers.modeling_utils import unwrap_model as _model_unwrap
+
+from transformers.optimization import Adafactor, get_scheduler
+from torch.optim import AdamW
 import copy
 # Set path to SentEval
 PATH_TO_SENTEVAL = './SentEval'
@@ -176,7 +182,7 @@ class CLTrainer(Trainer):
                     self.deepspeed.save_checkpoint(output_dir)
 
                 # Save optimizer and scheduler
-                if self.sharded_dpp:
+                if getattr(self, 'sharded_dpp', False):
                     self.optimizer.consolidate_state_dict()
 
                 if is_torch_tpu_available():
@@ -218,7 +224,7 @@ class CLTrainer(Trainer):
                 self.deepspeed.save_checkpoint(output_dir)
 
             # Save optimizer and scheduler
-            if self.sharded_dpp:
+            if getattr(self, 'sharded_dpp', False):
                 self.optimizer.consolidate_state_dict()
 
             if is_torch_tpu_available():
@@ -320,8 +326,8 @@ class CLTrainer(Trainer):
 
         model = self.model_wrapped
 
-        # Mixed precision training with apex (torch < 1.6)
-        if self.use_apex:
+        # Mixed precision training with apex (torch > 1.6)
+        if getattr(self, 'use_apex', False):
             model, self.optimizer = amp.initialize(model, self.optimizer, opt_level=self.args.fp16_opt_level)
 
         # Multi-gpu training (should be after apex fp16 initialization)
@@ -329,7 +335,7 @@ class CLTrainer(Trainer):
             model = torch.nn.DataParallel(model)
 
         # Distributed training (should be after apex fp16 initialization)
-        if self.sharded_dpp:
+        if getattr(self, 'sharded_dpp', False):
             model = ShardedDDP(model, self.optimizer)
         elif self.args.local_rank != -1:
             model = torch.nn.parallel.DistributedDataParallel(
@@ -437,7 +443,7 @@ class CLTrainer(Trainer):
             epoch_iterator = train_dataloader
 
             # Reset the past mems state at the beginning of each epoch if necessary.
-            if self.args.past_index >= 0:
+            if getattr(self.args, 'past_index', -1) >= 0:
                 self._past = None
 
             steps_in_epoch = len(train_dataloader) if train_dataset_is_sized else self.args.max_steps
@@ -461,6 +467,7 @@ class CLTrainer(Trainer):
                     with model.no_sync():
                         tr_loss += self.training_step(model, inputs)
                 else:
+                    self.current_gradient_accumulation_steps = self.args.gradient_accumulation_steps
                     tr_loss += self.training_step(model, inputs)
                 self._total_flos += self.floating_point_ops(inputs)
 
@@ -472,27 +479,19 @@ class CLTrainer(Trainer):
                     # Gradient clipping
                     if self.args.max_grad_norm is not None and self.args.max_grad_norm > 0 and not self.deepspeed:
                         # deepspeed does its own clipping
-
-                        if self.use_amp:
-                            # AMP: gradients need unscaling
-                            self.scaler.unscale_(self.optimizer)
-
                         if hasattr(self.optimizer, "clip_grad_norm"):
                             # Some optimizers (like the sharded optimizer) have a specific way to do gradient clipping
                             self.optimizer.clip_grad_norm(self.args.max_grad_norm)
+                        elif hasattr(self.accelerator, "clip_grad_norm_"):
+                            self.accelerator.clip_grad_norm_(model.parameters(), self.args.max_grad_norm)
                         else:
-                            # Revert to normal clipping otherwise, handling Apex or full precision
                             torch.nn.utils.clip_grad_norm_(
-                                amp.master_params(self.optimizer) if self.use_apex else model.parameters(),
+                                model.parameters(),
                                 self.args.max_grad_norm,
                             )
-
                     # Optimizer step
                     if is_torch_tpu_available():
                         xm.optimizer_step(self.optimizer)
-                    elif self.use_amp:
-                        self.scaler.step(self.optimizer)
-                        self.scaler.update()
                     else:
                         self.optimizer.step()
                     
@@ -504,13 +503,14 @@ class CLTrainer(Trainer):
                     self.state.epoch = epoch + (step + 1) / steps_in_epoch
                     self.control = self.callback_handler.on_step_end(self.args, self.state, self.control)
 
-                    self._maybe_log_save_evaluate(tr_loss, model, trial, epoch)
+                    self._maybe_log_save_evaluate(tr_loss, None, model, trial, epoch, ignore_keys_for_eval=None, start_time=0)
 
                 if self.control.should_epoch_stop or self.control.should_training_stop:
                     break
 
             self.control = self.callback_handler.on_epoch_end(self.args, self.state, self.control)
-            self._maybe_log_save_evaluate(tr_loss, model, trial, epoch)
+            self._maybe_log_save_evaluate(tr_loss, None, model, trial, epoch, ignore_keys_for_eval=None, start_time=0)
+            
 
             if self.args.tpu_metrics_debug or self.args.debug:
                 if is_torch_tpu_available():
@@ -524,7 +524,7 @@ class CLTrainer(Trainer):
             if self.control.should_training_stop:
                 break
 
-        if self.args.past_index and hasattr(self, "_past"):
+        if getattr(self.args, 'past_index', -1) >= 0 and hasattr(self, "_past"):
             # Clean the state at the end of training
             delattr(self, "_past")
 

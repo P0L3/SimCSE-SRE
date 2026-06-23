@@ -10,6 +10,7 @@ import random
 
 from datasets import load_dataset
 
+
 import transformers
 from transformers import (
     CONFIG_MAPPING,
@@ -33,7 +34,7 @@ from transformers import (
 from transformers.tokenization_utils_base import BatchEncoding, PaddingStrategy, PreTrainedTokenizerBase
 from transformers.trainer_utils import is_main_process
 from transformers.data.data_collator import DataCollatorForLanguageModeling
-from transformers.file_utils import cached_property, torch_required, is_torch_available, is_torch_tpu_available
+from functools import cached_property
 from simcse.models import RobertaForCL, BertForCL
 from simcse.trainers import CLTrainer
 
@@ -195,54 +196,16 @@ class OurTrainingArguments(TrainingArguments):
         metadata={"help": "Evaluate transfer task dev sets (in validation)."}
     )
 
-    @cached_property
-    @torch_required
-    def _setup_devices(self) -> "torch.device":
-        logger.info("PyTorch: setting up devices")
-        if self.no_cuda:
-            device = torch.device("cpu")
-            self._n_gpu = 0
-        elif is_torch_tpu_available():
-            import torch_xla.core.xla_model as xm
-            device = xm.xla_device()
-            self._n_gpu = 0
-        elif self.local_rank == -1:
-            # if n_gpu is > 1 we'll use nn.DataParallel.
-            # If you only want to use a specific subset of GPUs use `CUDA_VISIBLE_DEVICES=0`
-            # Explicitly set CUDA to the first (index 0) CUDA device, otherwise `set_device` will
-            # trigger an error that a device index is missing. Index 0 takes into account the
-            # GPUs available in the environment, so `CUDA_VISIBLE_DEVICES=1,2` with `cuda:0`
-            # will use the first GPU in that env, i.e. GPU#1
-            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-            # Sometimes the line in the postinit has not been run before we end up here, so just checking we're not at
-            # the default value.
-            self._n_gpu = torch.cuda.device_count()
-        else:
-            # Here, we'll use torch.distributed.
-            # Initializes the distributed backend which will take care of synchronizing nodes/GPUs
-            #
-            # deepspeed performs its own DDP internally, and requires the program to be started with:
-            # deepspeed  ./program.py
-            # rather than:
-            # python -m torch.distributed.launch --nproc_per_node=2 ./program.py
-            if self.deepspeed:
-                from .integrations import is_deepspeed_available
+    overwrite_output_dir: bool = field(
+        default=False,
+        metadata={"help": "Overwrite the content of the output directory."}
+    )
 
-                if not is_deepspeed_available():
-                    raise ImportError("--deepspeed requires deepspeed: `pip install deepspeed`.")
-                import deepspeed
+    # Removed the _setup_devices override
 
-                deepspeed.init_distributed()
-            else:
-                torch.distributed.init_process_group(backend="nccl")
-            device = torch.device("cuda", self.local_rank)
-            self._n_gpu = 1
 
-        if device.type == "cuda":
-            torch.cuda.set_device(device)
-
-        return device
-
+import datasets as ds
+ds.disable_caching()
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -443,13 +406,19 @@ def main():
         return features
 
     if training_args.do_train:
-        train_dataset = datasets["train"].map(
-            prepare_features,
-            batched=True,
-            num_proc=data_args.preprocessing_num_workers,
-            remove_columns=column_names,
-            load_from_cache_file=not data_args.overwrite_cache,
-        )
+        try:
+            train_dataset = datasets["train"].map(
+                prepare_features,
+                batched=True,
+                batch_size=100,
+                writer_batch_size=100,
+                num_proc=data_args.preprocessing_num_workers,
+                remove_columns=column_names,
+                load_from_cache_file=not data_args.overwrite_cache,
+            )
+        except Exception as e:
+            logger.error(f"Map failed: {e}", exc_info=True)
+            raise
 
     # Data collator
     @dataclass
@@ -535,7 +504,8 @@ def main():
         model=model,
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
-        tokenizer=tokenizer,
+        eval_dataset=train_dataset if training_args.do_train else None,  # Dummy
+        processing_class=tokenizer,
         data_collator=data_collator,
     )
     trainer.model_args = model_args

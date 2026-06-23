@@ -274,6 +274,7 @@ def sentemb_forward(
 
 class BertForCL(BertPreTrainedModel):
     _keys_to_ignore_on_load_missing = [r"position_ids"]
+    all_tied_weights_keys = {}  # Hotfix
 
     def __init__(self, config, *model_args, **model_kargs):
         super().__init__(config)
@@ -333,6 +334,7 @@ class BertForCL(BertPreTrainedModel):
 
 class RobertaForCL(RobertaPreTrainedModel):
     _keys_to_ignore_on_load_missing = [r"position_ids"]
+    all_tied_weights_keys = {}  # <-- add this line
 
     def __init__(self, config, *model_args, **model_kargs):
         super().__init__(config)
