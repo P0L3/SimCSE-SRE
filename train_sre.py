@@ -38,6 +38,23 @@ from functools import cached_property
 from simcse.models import RobertaForCL, BertForCL
 from simcse.trainers import CLTrainer
 
+from transformers import TrainerCallback
+
+class SRESaveCallback(TrainerCallback):
+    """
+    Saves checkpoints exactly in the SRE format (epoch_1, epoch_2, etc.)
+    at the end of every epoch so run_pipeline.py can find and score them.
+    """
+    def __init__(self, output_dir):
+        self.output_dir = output_dir
+
+    def on_epoch_end(self, args, state, control, model=None, tokenizer=None, **kwargs):
+        epoch = int(round(state.epoch))
+        epoch_dir = os.path.join(self.output_dir, f"epoch_{epoch}")
+        logger.info(f"Saving SRE-style epoch checkpoint to {epoch_dir}")
+        model.save_pretrained(epoch_dir)
+        tokenizer.save_pretrained(epoch_dir)
+
 logger = logging.getLogger(__name__)
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_MASKED_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
@@ -560,6 +577,8 @@ def main():
         data_collator=data_collator,
     )
     trainer.model_args = model_args
+
+    trainer.add_callback(SRESaveCallback(training_args.output_dir))
 
     # Training
     if training_args.do_train:
