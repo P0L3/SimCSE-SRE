@@ -81,13 +81,13 @@ from transformers.modeling_utils import unwrap_model as _model_unwrap
 from transformers.optimization import Adafactor, get_scheduler
 from torch.optim import AdamW
 import copy
-# Set path to SentEval
-PATH_TO_SENTEVAL = './SentEval'
-PATH_TO_DATA = './SentEval/data'
+# # Set path to SentEval
+# PATH_TO_SENTEVAL = './SentEval'
+# PATH_TO_DATA = './SentEval/data'
 
-# Import SentEval
-sys.path.insert(0, PATH_TO_SENTEVAL)
-import senteval
+# # Import SentEval
+# sys.path.insert(0, PATH_TO_SENTEVAL)
+# import senteval
 import numpy as np
 from datetime import datetime
 from filelock import FileLock
@@ -101,53 +101,10 @@ class CLTrainer(Trainer):
         eval_dataset: Optional[Dataset] = None,
         ignore_keys: Optional[List[str]] = None,
         metric_key_prefix: str = "eval",
-        eval_senteval_transfer: bool = False,
+        **kwargs,
     ) -> Dict[str, float]:
-
-        # SentEval prepare and batcher
-        def prepare(params, samples):
-            return
-
-        def batcher(params, batch):
-            sentences = [' '.join(s) for s in batch]
-            batch = self.tokenizer.batch_encode_plus(
-                sentences,
-                return_tensors='pt',
-                padding=True,
-            )
-            for k in batch:
-                batch[k] = batch[k].to(self.args.device)
-            with torch.no_grad():
-                outputs = self.model(**batch, output_hidden_states=True, return_dict=True, sent_emb=True)
-                pooler_output = outputs.pooler_output
-            return pooler_output.cpu()
-
-        # Set params for SentEval (fastmode)
-        params = {'task_path': PATH_TO_DATA, 'usepytorch': True, 'kfold': 5}
-        params['classifier'] = {'nhid': 0, 'optim': 'rmsprop', 'batch_size': 128,
-                                            'tenacity': 3, 'epoch_size': 2}
-
-        se = senteval.engine.SE(params, batcher, prepare)
-        tasks = ['STSBenchmark', 'SICKRelatedness']
-        if eval_senteval_transfer or self.args.eval_transfer:
-            tasks = ['STSBenchmark', 'SICKRelatedness', 'MR', 'CR', 'SUBJ', 'MPQA', 'SST2', 'TREC', 'MRPC']
-        self.model.eval()
-        results = se.eval(tasks)
-        
-        stsb_spearman = results['STSBenchmark']['dev']['spearman'][0]
-        sickr_spearman = results['SICKRelatedness']['dev']['spearman'][0]
-
-        metrics = {"eval_stsb_spearman": stsb_spearman, "eval_sickr_spearman": sickr_spearman, "eval_avg_sts": (stsb_spearman + sickr_spearman) / 2} 
-        if eval_senteval_transfer or self.args.eval_transfer:
-            avg_transfer = 0
-            for task in ['MR', 'CR', 'SUBJ', 'MPQA', 'SST2', 'TREC', 'MRPC']:
-                avg_transfer += results[task]['devacc']
-                metrics['eval_{}'.format(task)] = results[task]['devacc']
-            avg_transfer /= 7
-            metrics['eval_avg_transfer'] = avg_transfer
-
-        self.log(metrics)
-        return metrics
+        # SRE ADJUSTMENT: SentEval disabled. Evaluation handled externally.
+        return {}
         
     def _save_checkpoint(self, model, trial, metrics=None):
         """
