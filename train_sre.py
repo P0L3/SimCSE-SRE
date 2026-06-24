@@ -71,21 +71,21 @@ def format_sentence(row, mask_token: str):
     final_text = f"{marked_text.strip()} The relation is {mask_token}."
     return final_text
 
-
 class SRESaveCallback(TrainerCallback):
     """
     Saves checkpoints exactly in the SRE format (epoch_1, epoch_2, etc.)
     at the end of every epoch so run_pipeline.py can find and score them.
     """
-    def __init__(self, output_dir):
+    def __init__(self, output_dir, tokenizer):
         self.output_dir = output_dir
+        self.tokenizer = tokenizer # --- SRE ADJUSTMENT: Store tokenizer reference ---
 
-    def on_epoch_end(self, args, state, control, model=None, tokenizer=None, **kwargs):
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
         epoch = int(round(state.epoch))
         epoch_dir = os.path.join(self.output_dir, f"epoch_{epoch}")
         logger.info(f"Saving SRE-style epoch checkpoint to {epoch_dir}")
         model.save_pretrained(epoch_dir)
-        tokenizer.save_pretrained(epoch_dir)
+        self.tokenizer.save_pretrained(epoch_dir) # --- SRE ADJUSTMENT: Use local reference ---
 
 logger = logging.getLogger(__name__)
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_MASKED_LM_MAPPING.keys())
@@ -612,7 +612,8 @@ def main():
     )
     trainer.model_args = model_args
 
-    trainer.add_callback(SRESaveCallback(training_args.output_dir))
+    # --- SRE ADJUSTMENT: Pass the local tokenizer to the callback ---
+    trainer.add_callback(SRESaveCallback(training_args.output_dir, tokenizer))
 
     # Training
     if training_args.do_train:
