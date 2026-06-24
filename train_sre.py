@@ -40,6 +40,31 @@ from simcse.trainers import CLTrainer
 
 from transformers import TrainerCallback
 
+# from https://github.com/P0L3/SRE/blob/main/evaluate.py
+def format_sentence(row, mask_token: str):
+    """Helper function to format a sentence with entity markers."""
+    text = row['sent']
+    e1_start, e1_end = int(row['e1_start_pos']), int(row['e1_end_pos'])
+    e2_start, e2_end = int(row['e2_start_pos']), int(row['e2_end_pos'])
+    
+    if e1_start < e2_start:
+        parts = [
+            text[:e1_start], "[E1]", text[e1_start:e1_end], "[/E1]",
+            text[e1_end:e2_start], "[E2]", text[e2_start:e2_end], "[/E2]",
+            text[e2_end:]
+        ]
+    else:
+        parts = [
+            text[:e2_start], "[E2]", text[e2_start:e2_end], "[/E2]",
+            text[e2_end:e1_start], "[E1]", text[e1_start:e1_end], "[/E1]",
+            text[e1_end:]
+        ]
+    
+    marked_text = " ".join(part for part in parts if part)
+    final_text = f"{marked_text.strip()} The relation is {mask_token}."
+    return final_text
+
+
 class SRESaveCallback(TrainerCallback):
     """
     Saves checkpoints exactly in the SRE format (epoch_1, epoch_2, etc.)
