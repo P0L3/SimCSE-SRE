@@ -1,3 +1,10 @@
+# First load torch to prevent CUDA dependency issues
+import torch
+if torch.cuda.is_available():
+    torch.cuda.init()
+else:
+    ImportError()
+
 import logging
 import math
 import os
@@ -258,6 +265,8 @@ def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
+    logger.info(f"Checking Python Interpreter: {sys.executable}")
+    logger.info(f"Is CUDA available in PyTorch? {torch.cuda.is_available()}")
 
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, OurTrainingArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
